@@ -6,18 +6,30 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from 'pdfjs-dist';
-import { Upload, BookOpen, Loader2, Languages, FileText, CheckCircle2, AlertCircle, Eye, EyeOff, X, Columns, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, BarChart3, Clock, Activity, Info, Wifi, WifiOff } from 'lucide-react';
+import { Upload, BookOpen, Loader2, Languages, FileText, CheckCircle2, AlertCircle, Eye, EyeOff, X, Columns, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, BarChart3, Clock, Activity, Info, Wifi, WifiOff, ArrowLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { pipeline, env } from '@xenova/transformers';
 
 // Intercept fetch for custom models
 const originalFetch = window.fetch;
 (window as any).fetch = async (...args: any[]) => {
-  const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url;
+  if (args.length === 0) return originalFetch.apply(window, args as any);
+  let url = '';
+  let requestInit: RequestInit | undefined;
+
+  if (args[0] instanceof Request) {
+    url = args[0].url;
+    requestInit = args[0];
+  } else {
+    url = typeof args[0] === 'string' ? args[0] : (args[0] as URL).toString();
+    requestInit = args[1];
+  }
 
   // Intercept ALL requests for custom-model files (main thread fallback for Service Worker)
   if (url.includes('/custom-model/')) {
-    const parts = url.split('/custom-model/');
+    // Strip query strings (Transformers.js adds ?v=... to some requests)
+    const cleanUrl = url.split('?')[0];
+    const parts = cleanUrl.split('/custom-model/');
     const filenameWithPossiblyPath = parts[parts.length - 1];
     const filenameOnly = filenameWithPossiblyPath.split('/').pop() || '';
     const files = (window as any).__CUSTOM_MODEL_FILES__ as Map<string, Blob>;
@@ -28,23 +40,41 @@ const originalFetch = window.fetch;
 
       // Fuzzy fallback for .onnx files
       if (!blob && filenameOnly.endsWith('.onnx')) {
-        const anyOnnx = Array.from(files.keys()).find(k => k.endsWith('.onnx'));
-        if (anyOnnx) blob = files.get(anyOnnx);
+        const filenames = Array.from(files.keys());
+        // If we're looking for encoder/decoder, try to find them specifically
+        const isEncoder = filenameOnly.toLowerCase().includes('encoder');
+        const isDecoder = filenameOnly.toLowerCase().includes('decoder');
+
+        if (isEncoder) {
+          const match = filenames.find(k => k.toLowerCase().includes('encoder') && k.endsWith('.onnx'));
+          if (match) blob = files.get(match);
+        } else if (isDecoder) {
+          const match = filenames.find(k => k.toLowerCase().includes('decoder') && k.endsWith('.onnx'));
+          if (match) blob = files.get(match);
+        }
+
+        // If still no blob, just take any .onnx if there's only one
+        if (!blob) {
+          const onnxFiles = filenames.filter(k => k.endsWith('.onnx'));
+          if (onnxFiles.length === 1) blob = files.get(onnxFiles[0]);
+        }
       }
 
       if (blob) {
-        const log = `[Virtual Fetch] ✅ Serving: ${filenameOnly}`;
+        const log = `[Fetch] ✅ Serving: ${filenameOnly}`;
         console.log(log);
         if ((window as any).__ADD_DEBUG_LOG__) (window as any).__ADD_DEBUG_LOG__(log);
         return new Response(blob, {
           status: 200,
-          headers: { 'Content-Type': blob.type || 'application/octet-stream' }
+          headers: {
+            'Content-Type': blob.type || (filenameOnly.endsWith('.json') ? 'application/json' : 'application/octet-stream'),
+            'Access-Control-Allow-Origin': '*'
+          }
         });
       }
 
-      // IMPORTANT: Return 404 — NOT originalFetch! 
-      // originalFetch would hit Vite which returns index.html, crashing Transformers.js JSON parsing.
-      const errLog = `[Virtual Fetch] ⚠️ 404: ${filenameOnly} (optional, skipped)`;
+      // Return 404 for missing files
+      const errLog = `[Fetch] ⚠️ 404: ${filenameOnly} (optional)`;
       console.warn(errLog);
       if ((window as any).__ADD_DEBUG_LOG__) (window as any).__ADD_DEBUG_LOG__(errLog);
       return new Response(`File not found: ${filenameOnly}`, {
@@ -306,8 +336,9 @@ export default function App() {
     }
   }, [isOfflineMode, modelSource]);
 
-  const loadOfflineModel = async (overrideFiles?: Map<string, Blob>) => {
-    if (translatorRef.current || isModelLoading) return;
+  const loadOfflineModel = async (overrideFiles?: Map<string, Blob>): Promise<boolean> => {
+    if (translatorRef.current) return true;
+    if (isModelLoading) return false;
 
     const filesToUse = overrideFiles || customModelFiles;
 
@@ -320,8 +351,12 @@ export default function App() {
     let modelId = '';
     if (modelSource === 'remote') {
       modelId = 'Xenova/opus-mt-en-id';
-      env.localModelPath = ''; // Default
+      env.localModelPath = '';
       env.allowRemoteModels = true;
+      env.allowLocalModels = false;
+      // Force Transformers.js to use the correct CDN and not fallback to current origin
+      env.remoteHost = 'https://huggingface.co';
+      env.remotePathTemplate = '{model}/resolve/{revision}/';
     } else if (modelSource === 'local') {
       modelId = 'opus-mt-en-id';
       env.localModelPath = '/models/';
@@ -329,7 +364,7 @@ export default function App() {
     } else if (modelSource === 'custom') {
       if (filesToUse.size === 0) {
         console.log("Custom model files not ready yet.");
-        return;
+
       }
 
       // Check if Service Worker is ready - required for custom model loading
@@ -348,7 +383,7 @@ export default function App() {
         setIsModelLoading(false);
         setModelStatus(null);
         setErrorMessage("Service Worker baru aktif! Silakan refresh halaman (Ctrl+R) dan coba lagi.");
-        return;
+
       }
 
       console.log('[SW] Service Worker is active:', swRegistration.active?.state);
@@ -391,7 +426,15 @@ export default function App() {
       modelId = 'custom-model';
       env.localModelPath = window.location.origin + '/';
       env.allowLocalModels = true;
-      env.allowRemoteModels = false;
+      env.allowRemoteModels = true; // Allow fallback if needed, but interceptor catches /custom-model/
+
+      // Auto-detect quantization based on filenames
+      const isQuantized = Array.from(filesToUse.keys()).some(k =>
+        k.toLowerCase().includes('quant') ||
+        k.toLowerCase().includes('uint8') ||
+        k.toLowerCase().includes('int8')
+      );
+      console.log(`[Transformers.js] Auto-detected quantized: ${isQuantized}`);
     }
 
     setModelStatus(modelSource === 'remote' ? "Mengunduh model terjemahan..." :
@@ -400,7 +443,11 @@ export default function App() {
 
     try {
       console.log(`[Transformers.js] Initializing pipeline for: ${modelId}`);
-      console.log(`[Transformers.js] allowRemoteModels: ${env.allowRemoteModels}, localModelPath: ${env.localModelPath}`);
+
+      const isCustom = modelSource === 'custom';
+      const isQuantized = isCustom ? Array.from(filesToUse.keys()).some(k =>
+        k.toLowerCase().includes('quant') || k.toLowerCase().includes('uint8') || k.toLowerCase().includes('int8')
+      ) : true;
 
       const pipelineOptions: any = {
         progress_callback: (data: any) => {
@@ -437,34 +484,41 @@ export default function App() {
             console.log(`[Transformers.js] Ready callback for: ${data.file}`);
           }
         },
-        quantized: true,
+        quantized: isQuantized,
       };
 
       const result = await pipeline('translation', modelId, pipelineOptions);
 
-      if (!result) throw new Error("Pipeline returned null or undefined");
+      if (!result) throw new Error("Pipeline returned null atau undefined");
 
       translatorRef.current = result;
-      console.log("[Transformers.js] Success: Model loaded and ready");
+      console.log("[Transformers.js] Sukses: Model dimuat dan siap");
 
       setModelProgress(100);
       setProgressItems({});
       setModelStatus("Model siap digunakan.");
       setIsModelLoading(false);
       setTimeout(() => setModelStatus(null), 3000);
+      return true;
     } catch (error: any) {
-      console.error("[Transformers.js] Error:", error);
-      let errorMsg = error.message || "Model tidak ditemukan atau koneksi terputus.";
-      if (modelSource === 'local') {
-        errorMsg = "Gagal memuat model lokal. Pastikan folder '/public/models/opus-mt-en-id/' sudah terisi file ONNX.";
-      } else if (modelSource === 'remote') {
-        errorMsg = "Gagal mengunduh model. Periksa koneksi internet atau coba lagi nanti. Terkadang HuggingFace mengalami gangguan.";
+      console.error("[Transformers.js] Error details:", error);
+      let errorMsg = error.message || "Model gagal dimuat.";
+
+      if (modelSource === 'custom') {
+        if (error.message?.includes('JSON')) {
+          errorMsg = "Gagal membaca konfigurasi model (JSON error). Pastikan file config.json dan tokenizer.json benar.";
+        } else if (error.message?.includes('ONNX')) {
+          errorMsg = "Gagal memuat file ONNX. Pastikan file model .onnx benar dan kompatibel dengan Transformers.js.";
+        } else {
+          errorMsg = `Gagal memuat model custom: ${error.message}`;
+        }
       }
       setErrorMessage(errorMsg);
       setIsOfflineMode(false);
       setIsModelLoading(false);
       setModelStatus(null);
       setProgressItems({});
+      return false;
     }
   };
 
@@ -803,10 +857,28 @@ export default function App() {
 
         if (isOfflineMode) {
           if (!translatorRef.current) {
-            await loadOfflineModel();
+            const success = await loadOfflineModel();
+            if (!success) {
+              // Error message is already set by loadOfflineModel
+              setTextPairs(prev => {
+                const next = [...prev];
+                for (let j = i; j < Math.min(i + batchSize, total); j++) {
+                  next[j].status = 'error';
+                }
+                return next;
+              });
+              return; // Stop processing batches if model failed
+            }
           }
 
           if (translatorRef.current) {
+            // Check for potential issues with custom models (e.g. missing decoder)
+            if (modelSource === 'custom' && !translatorRef.current.model?.decoder) {
+              const fileList = Array.from(customModelFiles.keys()).join(', ');
+              console.warn("[Transformers.js] Decoder missing in pipeline. Files:", fileList);
+              // We don't throw yet, as some models might be combined, but we log it.
+            }
+
             const start = performance.now();
             const results = await translatorRef.current(currentBatch.map(p => p.original), {
               max_new_tokens: 256,
@@ -878,8 +950,13 @@ export default function App() {
       } catch (error: any) {
         console.error("Translation error:", error);
 
-        // Handle API Quota Exceeded (429)
-        if (error?.status === 429 || (error?.message && error.message.includes('429'))) {
+        if (isOfflineMode) {
+          let msg = error.message || "Gagal menerjemahkan (Offline).";
+          if (msg.includes("attention_mask")) {
+            msg = "Error Model: Input 'attention_mask' hilang. Pastikan Anda sudah mengunggah file DECODER (.onnx) yang lengkap.";
+          }
+          setErrorMessage(msg);
+        } else if (error?.status === 429 || (error?.message && error.message.includes('429'))) {
           setErrorMessage("Batas penggunaan API tercapai. Silakan coba lagi nanti.");
         }
 
@@ -895,7 +972,7 @@ export default function App() {
         if (error?.status === 429) break;
       }
 
-      setProgress(50 + Math.round(((i + batchSize) / total) * 50));
+      setProgress(50 + Math.round((Math.min(i + batchSize, total) / total) * 50));
     }
   };
 
@@ -935,7 +1012,27 @@ export default function App() {
               <BookOpen className="w-6 h-6 text-black" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">Bilingual Reader</h1>
+              <div className="flex items-center gap-2">
+                {textPairs.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (confirm("Tutup buku ini dan kembali ke menu utama?")) {
+                        setTextPairs([]);
+                        setFileName(null);
+                        setFileUrl(null);
+                        setProgress(0);
+                        setNumPages(0);
+                        setPdfPage(1);
+                      }
+                    }}
+                    className="p-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-zinc-400 hover:text-white transition-all mr-1"
+                    title="Kembali ke Menu Utama"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                )}
+                <h1 className="text-xl font-bold tracking-tight">Bilingual Reader</h1>
+              </div>
               <p className="text-xs text-zinc-400 font-medium uppercase tracking-wider">AI Powered Translation</p>
             </div>
           </div>
@@ -1195,36 +1292,68 @@ export default function App() {
                         <h4 className="text-sm font-bold text-blue-400 uppercase tracking-widest">Setup Custom Model</h4>
                         <p className="text-[10px] text-zinc-500 mt-1">Browser akan membaca file langsung dari memori.</p>
                       </div>
-                      <button
-                        onClick={() => {
-                          const input = document.createElement('input');
-                          input.type = 'file';
-                          input.multiple = true;
-                          input.onchange = (e: any) => {
-                            const files = e.target.files as FileList;
-                            const newMap = new Map<string, Blob>();
-                            Array.from(files).forEach(f => newMap.set(f.name, f));
-                            setCustomModelFiles(newMap);
-                            // Trigger load immediately with the new files to avoid race condition
-                            if (isOfflineMode) loadOfflineModel(newMap);
-                          };
-                          input.click();
-                        }}
-                        className="text-xs font-bold px-4 py-2 bg-blue-500 text-black rounded-xl hover:bg-blue-400 transition-all shadow-lg shadow-blue-500/20 active:scale-95"
-                      >
-                        PILIH FILE MODEL
-                      </button>
+                      <div className="flex gap-2">
+                        {customModelFiles.size > 0 && (
+                          <button
+                            onClick={async () => {
+                              if (confirm("Hapus semua file model custom dari cache dan storage?")) {
+                                setCustomModelFiles(new Map());
+                                try {
+                                  await caches.delete('custom-model-cache-v1');
+                                  const request = indexedDB.open('ModelStorage', 1);
+                                  request.onsuccess = (e: any) => {
+                                    const db = e.target.result;
+                                    const transaction = db.transaction(['models'], 'readwrite');
+                                    const store = transaction.objectStore('models');
+                                    store.delete('current_custom_model');
+                                  };
+                                  window.location.reload();
+                                } catch (err) {
+                                  console.error("Failed to clear cache:", err);
+                                }
+                              }
+                            }}
+                            className="text-[9px] font-bold px-3 py-1 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-all border border-red-500/20"
+                          >
+                            RESET
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.multiple = true;
+                            input.onchange = (e: any) => {
+                              const files = e.target.files as FileList;
+                              const newMap = new Map<string, Blob>();
+                              Array.from(files).forEach(f => newMap.set(f.name, f));
+                              setCustomModelFiles(newMap);
+                              // Trigger load immediately with the new files to avoid race condition
+                              if (isOfflineMode) loadOfflineModel(newMap);
+                            };
+                            input.click();
+                          }}
+                          className="text-xs font-bold px-4 py-2 bg-blue-500 text-black rounded-xl hover:bg-blue-400 transition-all shadow-lg shadow-blue-500/20 active:scale-95"
+                        >
+                          PILIH FILE MODEL
+                        </button>
+                      </div>
                     </div>
 
                     {customModelFiles.size > 0 ? (
                       <div className="space-y-4">
                         <div className="grid grid-cols-2 gap-2">
-                          {['.onnx', 'config.json', 'tokenizer.json'].map(reqFile => {
-                            const found = Array.from(customModelFiles.keys()).some(k => k.toLowerCase().includes(reqFile.toLowerCase()));
+                          {[
+                            { label: 'config.json', pattern: 'config.json' },
+                            { label: 'tokenizer.json', pattern: 'tokenizer.json' },
+                            { label: 'encoder (.onnx)', pattern: 'encoder' },
+                            { label: 'decoder (.onnx)', pattern: 'decoder' }
+                          ].map(req => {
+                            const found = Array.from(customModelFiles.keys()).some(k => k.toLowerCase().includes(req.pattern.toLowerCase()) || (req.pattern === 'encoder' && !k.toLowerCase().includes('decoder') && k.endsWith('.onnx')));
                             return (
-                              <div key={reqFile} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-mono ${found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-red-500/10 border-red-500/30 text-red-500'}`}>
-                                {found ? <CheckCircle2 className="w-3 h-3" /> : <X className="w-3 h-3" />}
-                                {reqFile}
+                              <div key={req.label} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-mono ${found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : (req.pattern === 'decoder' ? 'bg-amber-500/5 border-amber-500/20 text-amber-500/50' : 'bg-red-500/10 border-red-500/30 text-red-500')}`}>
+                                {found ? <CheckCircle2 className="w-3 h-3" /> : (req.pattern === 'decoder' ? <AlertCircle className="w-3 h-3" /> : <X className="w-3 h-3" />)}
+                                {req.label}
                               </div>
                             );
                           })}
@@ -1242,9 +1371,17 @@ export default function App() {
                         </div>
 
                         {Array.from(customModelFiles.keys()).some(k => k.endsWith('.onnx')) ? (
-                          <div className="flex items-center gap-2 text-xs text-emerald-500 bg-emerald-500/20 p-3 rounded-2xl border border-emerald-500/30">
-                            <Activity className="w-4 h-4" />
-                            <span className="font-bold">Model terdeteksi. Siap untuk dimuat!</span>
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-xs text-emerald-500 bg-emerald-500/20 p-3 rounded-2xl border border-emerald-500/30">
+                              <Activity className="w-4 h-4" />
+                              <span className="font-bold">Model terdeteksi. Siap untuk dimuat!</span>
+                            </div>
+                            {!Array.from(customModelFiles.keys()).some(k => k.toLowerCase().includes('decoder')) && (
+                              <div className="flex items-center gap-2 text-[10px] text-amber-500 bg-amber-500/10 p-2 rounded-xl border border-amber-500/30">
+                                <AlertCircle className="w-3 h-3" />
+                                <span>Tip: Model terjemahan biasanya memerlukan file <b>decoder</b> (.onnx) tambahan.</span>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="flex items-center gap-2 text-xs text-amber-500 bg-amber-500/10 p-3 rounded-2xl border border-amber-500/30">

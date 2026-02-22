@@ -15,7 +15,7 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(event.request.url);
 
     // Intercept any request to /custom-model/ path on the same origin
-    if (url.pathname.startsWith('/custom-model/')) {
+    if (url.pathname.includes('/custom-model/')) {
         console.log('[SW] Intercepting:', url.pathname);
         event.respondWith(serveCustomModel(url.pathname));
     }
@@ -23,46 +23,92 @@ self.addEventListener('fetch', (event) => {
 
 async function serveCustomModel(pathname) {
     try {
-        // Extract the filename from /custom-model/path/to/filename.ext
-        const relativePath = pathname.replace('/custom-model/', '');
+        // Strip query strings if any (though URL pathname usually doesn't include them, 
+        // Transformers.js might sometimes append them in ways that affect matching)
+        const cleanPathname = pathname.split('?')[0];
+
+        // Extract the relative path after /custom-model/
+        const parts = cleanPathname.split('/custom-model/');
+        const relativePath = parts[parts.length - 1];
         const filenameOnly = relativePath.split('/').pop() || relativePath;
 
         console.log('[SW] Looking for:', relativePath, '| filename:', filenameOnly);
 
         const cache = await caches.open(CACHE_NAME);
 
-        // Try exact match using the stored key format
+        // 1. Exact match
         let response = await cache.match('/custom-model-files/' + relativePath);
 
-        // Try filename-only match
+        // 2. Filename-only match
         if (!response) {
             response = await cache.match('/custom-model-files/' + filenameOnly);
         }
 
-        // Fuzzy fallback for .onnx files (model could be named encoder_model.onnx, etc.)
+        // 3. Advanced Fuzzy fallback for .onnx files
         if (!response && filenameOnly.endsWith('.onnx')) {
             const keys = await cache.keys();
-            const onnxKey = keys.find(k => k.url.endsWith('.onnx'));
-            if (onnxKey) {
-                console.log('[SW] Fuzzy ONNX match:', onnxKey.url);
-                response = await cache.match(onnxKey);
+            const filenames = keys.map(k => k.url.split('/').pop());
+
+            const isEncoder = filenameOnly.toLowerCase().includes('encoder');
+            const isDecoder = filenameOnly.toLowerCase().includes('decoder');
+
+            if (isEncoder) {
+                const match = keys.find(k => k.url.toLowerCase().includes('encoder') && k.url.endsWith('.onnx'));
+                if (match) response = await cache.match(match);
+            } else if (isDecoder) {
+                const match = keys.find(k => k.url.toLowerCase().includes('decoder') && k.url.endsWith('.onnx'));
+                if (match) response = await cache.match(match);
+            }
+
+            // Fallback to any ONNX if only one exists
+            if (!response) {
+                const onnxKeys = keys.filter(k => k.url.endsWith('.onnx'));
+                if (onnxKeys.length === 1) {
+                    console.log('[SW] Single ONNX fallback:', onnxKeys[0].url);
+                    response = await cache.match(onnxKeys[0]);
+                }
             }
         }
 
         if (response) {
-            console.log('[SW] Serving from cache:', filenameOnly);
-            return response.clone();
+            console.log('[SW] ✅ Served dari cache:', filenameOnly);
+            const newHeaders = new Headers(response.headers);
+            newHeaders.set('Access-Control-Allow-Origin', '*');
+
+            return new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: newHeaders
+            });
         }
 
-        // Log all available keys for debugging
-        const keys = await cache.keys();
-        console.warn('[SW] Not found:', filenameOnly, '| Available:', keys.map(k => k.url.split('/').pop()).join(', '));
+        // JIKA FILE TIDAK ADA DI CACHE, AMBIL DARI NETWORK & SIMPAN
+        try {
+            console.log('[SW] ⏳ Mengunduh dan caching:', pathname);
+
+            // Asumsi: Jika tidak ada di cache lokal, kita ambil dari URL aslinya
+            // (Anda mungkin perlu menyesuaikan URL ini tergantung darimana asal modelnya)
+            const networkResponse = await fetch(pathname);
+
+            if (networkResponse.ok) {
+                // Simpan salinan ke cache
+                const cache = await caches.open(CACHE_NAME);
+                cache.put(pathname, networkResponse.clone());
+
+                console.log('[SW] 📥 Berhasil disimpan ke cache:', filenameOnly);
+                return networkResponse;
+            }
+        } catch (fetchErr) {
+            console.error('[SW] ❌ Gagal mengunduh dari network:', fetchErr);
+        }
+
+        // Jika gagal dari cache dan network
         return new Response('File not found: ' + filenameOnly, {
             status: 404,
             headers: { 'Content-Type': 'text/plain' }
-        });
-    } catch (err) {
-        console.error('[SW] Error:', err);
-        return new Response('Service Worker error: ' + err.message, { status: 500 });
+        })
+
+    } catch (fetchErr) {
+        console.error('[SW] ❌ Gagal mengunduh dari network:', fetchErr);
     }
-}
+};        
