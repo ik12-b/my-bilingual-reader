@@ -38,20 +38,26 @@ const originalFetch = window.fetch;
       // Try exact match first
       let blob = files.get(filenameWithPossiblyPath) || files.get(filenameOnly);
 
-      // Fuzzy fallback for .onnx files
-      if (!blob && filenameOnly.endsWith('.onnx')) {
-        const filenames = Array.from(files.keys());
-        // If we're looking for encoder/decoder, try to find them specifically
-        const isEncoder = filenameOnly.toLowerCase().includes('encoder');
-        const isDecoder = filenameOnly.toLowerCase().includes('decoder');
+        // Fuzzy fallback for .onnx files
+        if (!blob && filenameOnly.endsWith('.onnx')) {
+          const filenames = Array.from(files.keys());
+          // If we're looking for encoder/decoder, try to find them specifically
+          // Also recognize "merged" models which contain decoder in a single file
+          const isEncoder = filenameOnly.toLowerCase().includes('encoder');
+          const isDecoder = filenameOnly.toLowerCase().includes('decoder') || filenameOnly.toLowerCase().includes('merged');
 
-        if (isEncoder) {
-          const match = filenames.find(k => k.toLowerCase().includes('encoder') && k.endsWith('.onnx'));
-          if (match) blob = files.get(match);
-        } else if (isDecoder) {
-          const match = filenames.find(k => k.toLowerCase().includes('decoder') && k.endsWith('.onnx'));
-          if (match) blob = files.get(match);
-        }
+          if (isEncoder) {
+            const match = filenames.find(k => k.toLowerCase().includes('encoder') && k.endsWith('.onnx'));
+            if (match) blob = files.get(match);
+          } else if (isDecoder) {
+            // First try exact decoder match, then try merged model
+            let match = filenames.find(k => k.toLowerCase().includes('decoder') && k.endsWith('.onnx'));
+            if (!match) {
+              // Try to find merged model (single file with both encoder+decoder)
+              match = filenames.find(k => k.toLowerCase().includes('merged') && k.endsWith('.onnx'));
+            }
+            if (match) blob = files.get(match);
+          }
 
         // If still no blob, just take any .onnx if there's only one
         if (!blob) {
@@ -796,29 +802,34 @@ export default function App() {
     pdfDocRef.current = pdf;
     setNumPages(pdf.numPages);
 
-    // Extract text from all pages in parallel
-    const pagePromises = Array.from({ length: pdf.numPages }, (_, i) => pdf.getPage(i + 1));
-    const pages = await Promise.all(pagePromises);
-
-    const pairs: TextPair[] = [];
-
-    for (let i = 0; i < pages.length; i++) {
-      const page = pages[i];
+    // Extract text from all pages in parallel - MUCH FASTER!
+    const pagePromises = Array.from({ length: pdf.numPages }, async (_, i) => {
+      const page = await pdf.getPage(i + 1);
       const content = await page.getTextContent();
       const pageText = content.items.map((item: any) => item.str).join(' ');
+      
+      // Update progress for each page as it completes
+      setProgress(Math.round(((i + 1) / pdf.numPages) * 30));
+      
+      return { pageNum: i + 1, text: pageText };
+    });
 
-      const pageSentences = splitIntoSentences(pageText);
+    const pageResults = await Promise.all(pagePromises);
+
+    const pairs: TextPair[] = [];
+    
+    for (const result of pageResults) {
+      const pageSentences = splitIntoSentences(result.text);
       pageSentences.forEach(s => {
         pairs.push({
           original: s,
           translated: '',
           status: 'pending',
-          page: i + 1
+          page: result.pageNum
         });
       });
-
-      setProgress(Math.round(((i + 1) / pdf.numPages) * 50));
     }
+    
     return pairs;
   };
 
@@ -1347,7 +1358,8 @@ export default function App() {
                             { label: 'config.json', pattern: 'config.json' },
                             { label: 'tokenizer.json', pattern: 'tokenizer.json' },
                             { label: 'encoder (.onnx)', pattern: 'encoder' },
-                            { label: 'decoder (.onnx)', pattern: 'decoder' }
+                            { label: 'decoder (.onnx)', pattern: 'decoder' },
+                            { label: 'merged (.onnx)', pattern: 'merged' }
                           ].map(req => {
                             const found = Array.from(customModelFiles.keys()).some(k => k.toLowerCase().includes(req.pattern.toLowerCase()) || (req.pattern === 'encoder' && !k.toLowerCase().includes('decoder') && k.endsWith('.onnx')));
                             return (
