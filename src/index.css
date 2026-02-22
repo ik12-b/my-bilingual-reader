@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+/* Standard Tailwind v4 Theme rule */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base;
+@layer components;
+@layer utilities;
+
+@layer base {
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer utilities {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  /* PDF.js Text Layer Styles */
+  .textLayer {
+    position: absolute;
+    text-align: initial;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+    opacity: 1;
+    line-height: 1;
+    text-shadow: none;
+    pointer-events: auto;
+  }
+
+  .textLayer span,
+  .textLayer br {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+  }
+
+  .textLayer ::selection {
+    background: rgba(0, 123, 255, 0.3);
+    color: transparent;
+  }
+
+  canvas {
+    image-rendering: auto;
+    display: block;
+  }
+
+  @keyframes pdf-pulse {
+    0% {
+      background-color: rgba(16, 185, 129, 0);
+      box-shadow: 0 0 0 0px rgba(16, 185, 129, 0);
+    }
+
+    15% {
+      background-color: rgba(16, 185, 129, 0.8);
+      box-shadow: 0 0 0 8px rgba(16, 185, 129, 0.5);
+    }
+
+    40% {
+      background-color: rgba(16, 185, 129, 0.4);
+      box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.3);
+    }
+
+    100% {
+      background-color: rgba(16, 185, 129, 0.15);
+      box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.2);
+    }
+  }
+
+  .pdf-highlight {
+    animation: pdf-pulse 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    border-radius: 2px;
+    z-index: 10;
+    pointer-events: none;
+  }
+}

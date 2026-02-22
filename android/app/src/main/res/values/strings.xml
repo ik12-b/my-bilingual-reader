@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">APK Reader</string>
+    <string name="title_activity_main">APK Reader</string>
+    <string name="package_name">com.myapkreader.app</string>
+    <string name="custom_url_scheme">com.myapkreader.app</string>
+</resources>
