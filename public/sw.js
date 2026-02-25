@@ -55,8 +55,9 @@ async function serveCustomModel(pathname) {
             if (isEncoder) {
                 const match = keys.find(k => k.url.toLowerCase().includes('encoder') && k.url.endsWith('.onnx'));
                 if (match) response = await cache.match(match);
-            } else if (isDecoder) {
-                const match = keys.find(k => k.url.toLowerCase().includes('decoder') && k.url.endsWith('.onnx'));
+            } else if (isDecoder || filenameOnly.toLowerCase().includes('merged')) {
+                // Try to find a file containing 'decoder' or 'merged'
+                const match = keys.find(k => (k.url.toLowerCase().includes('decoder') || k.url.toLowerCase().includes('merged')) && k.url.endsWith('.onnx'));
                 if (match) response = await cache.match(match);
             }
 
@@ -82,31 +83,12 @@ async function serveCustomModel(pathname) {
             });
         }
 
-        // JIKA FILE TIDAK ADA DI CACHE, AMBIL DARI NETWORK & SIMPAN
-        try {
-            console.log('[SW] ⏳ Mengunduh dan caching:', pathname);
-
-            // Asumsi: Jika tidak ada di cache lokal, kita ambil dari URL aslinya
-            // (Anda mungkin perlu menyesuaikan URL ini tergantung darimana asal modelnya)
-            const networkResponse = await fetch(pathname);
-
-            if (networkResponse.ok) {
-                // Simpan salinan ke cache
-                const cache = await caches.open(CACHE_NAME);
-                cache.put(pathname, networkResponse.clone());
-
-                console.log('[SW] 📥 Berhasil disimpan ke cache:', filenameOnly);
-                return networkResponse;
-            }
-        } catch (fetchErr) {
-            console.error('[SW] ❌ Gagal mengunduh dari network:', fetchErr);
-        }
-
-        // Jika gagal dari cache dan network
-        return new Response('File not found: ' + filenameOnly, {
+        // JIKA FILE TIDAK ADA DI CACHE - JANGAN UNDUH DARI INTERNET (Mode Custom)
+        console.warn('[SW] ❌ File tidak ditemukan di cache lokal:', filenameOnly);
+        return new Response('File kustom tidak ditemukan di cache: ' + filenameOnly, {
             status: 404,
             headers: { 'Content-Type': 'text/plain' }
-        })
+        });
 
     } catch (fetchErr) {
         console.error('[SW] ❌ Gagal mengunduh dari network:', fetchErr);

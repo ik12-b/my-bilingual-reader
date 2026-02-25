@@ -6,7 +6,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from "@google/genai";
 import * as pdfjsLib from 'pdfjs-dist';
-import { Upload, BookOpen, Loader2, Languages, FileText, CheckCircle2, AlertCircle, Eye, EyeOff, X, Columns, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, BarChart3, Clock, Activity, Info, Wifi, WifiOff, ArrowLeft } from 'lucide-react';
+import { Upload, BookOpen, Loader2, Languages, FileText, CheckCircle2, AlertCircle, Eye, EyeOff, X, Columns, ChevronLeft, ChevronRight, ChevronDown, ZoomIn, ZoomOut, BarChart3, Clock, Activity, Info, Wifi, WifiOff, ArrowLeft, Download, Settings, Trash2, Key, History, FileJson } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { pipeline, env } from '@xenova/transformers';
 
@@ -38,26 +38,26 @@ const originalFetch = window.fetch;
       // Try exact match first
       let blob = files.get(filenameWithPossiblyPath) || files.get(filenameOnly);
 
-        // Fuzzy fallback for .onnx files
-        if (!blob && filenameOnly.endsWith('.onnx')) {
-          const filenames = Array.from(files.keys());
-          // If we're looking for encoder/decoder, try to find them specifically
-          // Also recognize "merged" models which contain decoder in a single file
-          const isEncoder = filenameOnly.toLowerCase().includes('encoder');
-          const isDecoder = filenameOnly.toLowerCase().includes('decoder') || filenameOnly.toLowerCase().includes('merged');
+      // Fuzzy fallback for .onnx files
+      if (!blob && filenameOnly.endsWith('.onnx')) {
+        const filenames = Array.from(files.keys());
+        // If we're looking for encoder/decoder, try to find them specifically
+        // Also recognize "merged" models which contain decoder in a single file
+        const isEncoder = filenameOnly.toLowerCase().includes('encoder');
+        const isDecoder = filenameOnly.toLowerCase().includes('decoder') || filenameOnly.toLowerCase().includes('merged');
 
-          if (isEncoder) {
-            const match = filenames.find(k => k.toLowerCase().includes('encoder') && k.endsWith('.onnx'));
-            if (match) blob = files.get(match);
-          } else if (isDecoder) {
-            // First try exact decoder match, then try merged model
-            let match = filenames.find(k => k.toLowerCase().includes('decoder') && k.endsWith('.onnx'));
-            if (!match) {
-              // Try to find merged model (single file with both encoder+decoder)
-              match = filenames.find(k => k.toLowerCase().includes('merged') && k.endsWith('.onnx'));
-            }
-            if (match) blob = files.get(match);
+        if (isEncoder) {
+          const match = filenames.find(k => k.toLowerCase().includes('encoder') && k.endsWith('.onnx'));
+          if (match) blob = files.get(match);
+        } else if (isDecoder) {
+          // First try exact decoder match, then try merged model
+          let match = filenames.find(k => k.toLowerCase().includes('decoder') && k.endsWith('.onnx'));
+          if (!match) {
+            // Try to find merged model (single file with both encoder+decoder)
+            match = filenames.find(k => k.toLowerCase().includes('merged') && k.endsWith('.onnx'));
           }
+          if (match) blob = files.get(match);
+        }
 
         // If still no blob, just take any .onnx if there's only one
         if (!blob) {
@@ -67,7 +67,7 @@ const originalFetch = window.fetch;
       }
 
       if (blob) {
-        const log = `[Fetch] ✅ Serving: ${filenameOnly}`;
+        const log = `[Fetch] ✅ Serving LOKAL: ${filenameOnly} (${(blob.size / 1024 / 1024).toFixed(2)} MB)`;
         console.log(log);
         if ((window as any).__ADD_DEBUG_LOG__) (window as any).__ADD_DEBUG_LOG__(log);
         return new Response(blob, {
@@ -129,12 +129,20 @@ interface TextPair {
   page?: number;
 }
 
+interface HistoryEntry {
+  fileName: string;
+  textPairs: TextPair[];
+  date: string;
+  progress: number;
+}
+
 interface TranslationPairProps {
   index: number;
   pair: TextPair;
   hoveredIndex: number | null;
   showOriginalOnly: boolean;
   pdfPage: number;
+  readerFontSize: number;
   setHoveredIndex: (index: number | null) => void;
   setPdfPage: (page: number) => void;
   setActiveTab: (tab: 'translation' | 'pdf') => void;
@@ -148,7 +156,8 @@ const TranslationPair = React.memo(({
   pdfPage,
   setHoveredIndex,
   setPdfPage,
-  setActiveTab
+  setActiveTab,
+  readerFontSize
 }: TranslationPairProps) => {
   return (
     <motion.div
@@ -175,7 +184,10 @@ const TranslationPair = React.memo(({
       }}
     >
       <div className="space-y-1">
-        <p className="text-xl font-semibold leading-relaxed text-white/90 group-hover:text-emerald-400 transition-colors">
+        <p
+          className="font-semibold leading-relaxed text-white/90 group-hover:text-emerald-400 transition-colors"
+          style={{ fontSize: `${readerFontSize}px` }}
+        >
           {pair.original}
         </p>
 
@@ -187,7 +199,10 @@ const TranslationPair = React.memo(({
                 <span>Menerjemahkan...</span>
               </div>
             ) : pair.status === 'completed' ? (
-              <p className="text-base font-medium text-zinc-500 leading-relaxed italic">
+              <p
+                className="font-medium text-zinc-500 leading-relaxed italic"
+                style={{ fontSize: `${Math.max(12, readerFontSize - 2)}px` }}
+              >
                 {pair.translated}
               </p>
             ) : pair.status === 'error' ? (
@@ -240,15 +255,103 @@ export default function App() {
   const [modelProgress, setModelProgress] = useState(0);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [progressItems, setProgressItems] = useState<Record<string, { loaded: number, total: number, progress: number }>>({});
-  const [modelSource, setModelSource] = useState<'remote' | 'local' | 'custom'>(() => {
+  const [modelSource, setModelSource] = useState<'remote' | 'custom'>(() => {
     const saved = localStorage.getItem('modelSource');
-    return (saved as 'remote' | 'local' | 'custom') || 'remote';
+    return (saved as 'remote' | 'custom') || 'remote';
   });
   const [customModelFiles, setCustomModelFiles] = useState<Map<string, Blob>>(new Map());
   const [customModelName, setCustomModelName] = useState<string>("custom-model");
   const [showPerfDashboard, setShowPerfDashboard] = useState(false);
   const [manualTranslateTrigger, setManualTranslateTrigger] = useState(0);
+  const [remoteModelId, setRemoteModelId] = useState(() => {
+    return localStorage.getItem('remoteModelId') || 'Xenova/opus-mt-en-id';
+  });
+  const [loadedModelId, setLoadedModelId] = useState<string | null>(null);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => {
+    return localStorage.getItem('gemini_api_key') || import.meta.env.VITE_GEMINI_API_KEY || '';
+  });
+  const [readerFontSize, setReaderFontSize] = useState(() => {
+    return parseInt(localStorage.getItem('reader_font_size') || '18');
+  });
+  const [translationHistory, setTranslationHistory] = useState<HistoryEntry[]>(() => {
+    const saved = localStorage.getItem('translation_history');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [modelConfig, setModelConfig] = useState<{
+    arch?: string;
+    modelType?: string;
+    tokenizer?: string;
+    tasks?: string[];
+    isEncoderDecoder?: boolean;
+    requiredWeights: string[];
+    hasGenerationConfig?: boolean;
+    hasQuantizeConfig?: boolean;
+  } | null>(null);
+
+  // Save settings when they change
+  useEffect(() => {
+    localStorage.setItem('gemini_api_key', geminiApiKey);
+    localStorage.setItem('reader_font_size', readerFontSize.toString());
+  }, [geminiApiKey, readerFontSize]);
+
+  // Save history when it changes
+  useEffect(() => {
+    localStorage.setItem('translation_history', JSON.stringify(translationHistory));
+  }, [translationHistory]);
+
+  // Parse custom model config files
+  useEffect(() => {
+    if (modelSource !== 'custom' || customModelFiles.size === 0) {
+      setModelConfig(null);
+      return;
+    }
+
+    const parseConfigs = async () => {
+      const configBlob = customModelFiles.get('config.json');
+      if (!configBlob) return;
+
+      try {
+        const configText = await configBlob.text();
+        const config = JSON.parse(configText);
+
+        const tokenizerConfigBlob = customModelFiles.get('tokenizer_config.json') || customModelFiles.get('tokenizer.json');
+        let tokenizerInfo = "Standard";
+        if (tokenizerConfigBlob) {
+          try {
+            const tData = JSON.parse(await tokenizerConfigBlob.text());
+            tokenizerInfo = tData.tokenizer_class || tData.model_type || "Custom";
+          } catch (e) { }
+        }
+
+        const arch = config.architectures?.[0] || 'Unknown';
+        const modelType = config.model_type || 'Unknown';
+        const isEncDec = arch.includes('ConditionalGeneration') || arch.includes('MTModel') || arch.includes('MarianMT') || config.is_encoder_decoder;
+
+        const weights: string[] = [];
+        if (isEncDec) {
+          weights.push('encoder_model.onnx', 'decoder_model_merged.onnx');
+        } else {
+          weights.push('model.onnx');
+        }
+
+        setModelConfig({
+          arch,
+          modelType,
+          tokenizer: tokenizerInfo,
+          isEncoderDecoder: isEncDec,
+          requiredWeights: weights,
+          hasGenerationConfig: !!customModelFiles.get('generation_config.json'),
+          hasQuantizeConfig: !!customModelFiles.get('quantize_config.json')
+        });
+      } catch (e) {
+        console.error("Failed to parse config:", e);
+      }
+    };
+
+    parseConfigs();
+  }, [customModelFiles, modelSource]);
 
   // Expose log function to fetch interceptor
   useEffect(() => {
@@ -337,16 +440,28 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('isOfflineMode', isOfflineMode.toString());
     localStorage.setItem('modelSource', modelSource);
-    if (isOfflineMode && !translatorRef.current && !isModelLoading) {
-      loadOfflineModel();
-    }
-  }, [isOfflineMode, modelSource]);
+    localStorage.setItem('remoteModelId', remoteModelId);
+  }, [isOfflineMode, modelSource, remoteModelId]);
 
   const loadOfflineModel = async (overrideFiles?: Map<string, Blob>): Promise<boolean> => {
-    if (translatorRef.current) return true;
+    const filesToUse = overrideFiles || customModelFiles;
+
+    // Determine target model ID
+    let targetModelId = '';
+    if (modelSource === 'remote') {
+      targetModelId = remoteModelId;
+    } else {
+      targetModelId = 'custom-model';
+    }
+
+    // Only skip if already loaded same model
+    if (translatorRef.current && loadedModelId === targetModelId && !overrideFiles) return true;
     if (isModelLoading) return false;
 
-    const filesToUse = overrideFiles || customModelFiles;
+    // Reset translator if model ID changed
+    if (loadedModelId !== targetModelId) {
+      translatorRef.current = null;
+    }
 
     // Reset states before starting
     setIsModelLoading(true);
@@ -356,21 +471,16 @@ export default function App() {
 
     let modelId = '';
     if (modelSource === 'remote') {
-      modelId = 'Xenova/opus-mt-en-id';
+      modelId = remoteModelId;
       env.localModelPath = '';
       env.allowRemoteModels = true;
       env.allowLocalModels = false;
       // Force Transformers.js to use the correct CDN and not fallback to current origin
       env.remoteHost = 'https://huggingface.co';
       env.remotePathTemplate = '{model}/resolve/{revision}/';
-    } else if (modelSource === 'local') {
-      modelId = 'opus-mt-en-id';
-      env.localModelPath = '/models/';
-      env.allowRemoteModels = false; // Forced local
     } else if (modelSource === 'custom') {
       if (filesToUse.size === 0) {
         console.log("Custom model files not ready yet.");
-
       }
 
       // Check if Service Worker is ready - required for custom model loading
@@ -432,7 +542,11 @@ export default function App() {
       modelId = 'custom-model';
       env.localModelPath = window.location.origin + '/';
       env.allowLocalModels = true;
-      env.allowRemoteModels = true; // Allow fallback if needed, but interceptor catches /custom-model/
+      env.allowRemoteModels = false; // STRIKT: Jangan download apa-apa dari internet di mode Custom!
+
+      // Reset remote settings to prevent interference
+      env.remoteHost = '';
+      env.remotePathTemplate = '';
 
       // Auto-detect quantization based on filenames
       const isQuantized = Array.from(filesToUse.keys()).some(k =>
@@ -444,7 +558,7 @@ export default function App() {
     }
 
     setModelStatus(modelSource === 'remote' ? "Mengunduh model terjemahan..." :
-      modelSource === 'local' ? "Memuat model lokal (APK)..." :
+      modelSource === 'custom' ? "Memuat model lokal (Upload)..." :
         "Memuat model dari penyimpanan browser...");
 
     try {
@@ -459,7 +573,7 @@ export default function App() {
         progress_callback: (data: any) => {
           if (data.status === 'initiate') {
             console.log(`[Transformers.js] Initiating: ${data.file}`);
-            const actionLabel = modelSource === 'remote' ? "Mengunduh" : "Memuat";
+            const actionLabel = modelSource === 'remote' ? "Mengunduh" : "Memuat (LOKAL)";
             setModelStatus(`${actionLabel}: ${data.file}`);
             setProgressItems(prev => ({
               ...prev,
@@ -485,7 +599,8 @@ export default function App() {
             });
           } else if (data.status === 'done') {
             console.log(`[Transformers.js] Done: ${data.file}`);
-            setModelStatus(`Selesai mengunduh: ${data.file}`);
+            const actionLabel = modelSource === 'remote' ? "Selesai mengunduh" : "Selesai memuat";
+            setModelStatus(`${actionLabel}: ${data.file}`);
           } else if (data.status === 'ready') {
             console.log(`[Transformers.js] Ready callback for: ${data.file}`);
           }
@@ -498,6 +613,7 @@ export default function App() {
       if (!result) throw new Error("Pipeline returned null atau undefined");
 
       translatorRef.current = result;
+      setLoadedModelId(modelId);
       console.log("[Transformers.js] Sukses: Model dimuat dan siap");
 
       setModelProgress(100);
@@ -725,6 +841,59 @@ export default function App() {
     }
   }, [hoveredIndex, pdfPage, pdfZoom, textLayerRenderedCount]);
 
+  const saveCurrentToHistory = (pairs: TextPair[], name: string, prog: number) => {
+    if (!name) return;
+    setTranslationHistory(prev => {
+      const filtered = prev.filter(h => h.fileName !== name);
+      return [{
+        fileName: name,
+        textPairs: pairs,
+        date: new Date().toLocaleString(),
+        progress: prog
+      }, ...filtered].slice(0, 50); // Keep last 50 entries
+    });
+  };
+
+  const exportHistory = () => {
+    const data = JSON.stringify(translationHistory, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bilingual-reader-history-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importHistory = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = (e: any) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (re) => {
+        try {
+          const imported = JSON.parse(re.target?.result as string);
+          if (Array.isArray(imported)) {
+            setTranslationHistory(prev => {
+              const merged = [...imported, ...prev];
+              // Remove duplicates by fileName
+              const unique = Array.from(new Map(merged.map(item => [item.fileName, item])).values()) as HistoryEntry[];
+              return unique.slice(0, 50);
+            });
+            alert("History berhasil diimpor!");
+          }
+        } catch (err) {
+          alert("Gagal mengimpor: File tidak valid.");
+        }
+      };
+      reader.readAsText(file);
+    };
+    input.click();
+  };
+
   const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -762,6 +931,16 @@ export default function App() {
 
     try {
       console.log("Processing file:", file.name, file.type);
+
+      // Check history first
+      const existing = translationHistory.find(h => h.fileName === file.name);
+      if (existing) {
+        setTextPairs(existing.textPairs);
+        setProgress(existing.progress);
+        setIsProcessing(false);
+        return;
+      }
+
       let initialPairs: TextPair[] = [];
 
       if (file.type === 'application/pdf') {
@@ -807,17 +986,17 @@ export default function App() {
       const page = await pdf.getPage(i + 1);
       const content = await page.getTextContent();
       const pageText = content.items.map((item: any) => item.str).join(' ');
-      
+
       // Update progress for each page as it completes
       setProgress(Math.round(((i + 1) / pdf.numPages) * 30));
-      
+
       return { pageNum: i + 1, text: pageText };
     });
 
     const pageResults = await Promise.all(pagePromises);
 
     const pairs: TextPair[] = [];
-    
+
     for (const result of pageResults) {
       const pageSentences = splitIntoSentences(result.text);
       pageSentences.forEach(s => {
@@ -829,7 +1008,7 @@ export default function App() {
         });
       });
     }
-    
+
     return pairs;
   };
 
@@ -845,7 +1024,7 @@ export default function App() {
     const batchSize = 12; // Increased batch size for fewer API calls
     const total = pairs.length;
 
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    const apiKey = geminiApiKey;
     if (!apiKey) {
       setErrorMessage("API Key tidak ditemukan.");
       return;
@@ -955,6 +1134,13 @@ export default function App() {
               next[pairIndex] = { ...next[pairIndex], translated: t, status: 'completed' };
             }
           });
+
+          // Save to history after each batch
+          const completedCount = next.filter(p => p.status === 'completed').length;
+          const currentProg = Math.round((completedCount / next.length) * 100);
+          setProgress(currentProg);
+          saveCurrentToHistory(next, fileName || '', currentProg);
+
           return next;
         });
 
@@ -1091,6 +1277,14 @@ export default function App() {
             )}
 
             <button
+              onClick={() => setShowSettings(true)}
+              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full text-zinc-400 hover:text-white transition-all ring-1 ring-white/10"
+              title="Settings"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
+
+            <button
               onClick={() => setIsOfflineMode(!isOfflineMode)}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-full font-bold transition-all ${isOfflineMode
                 ? 'bg-amber-500 text-black'
@@ -1108,26 +1302,6 @@ export default function App() {
                 <span className="text-sm font-medium truncate max-w-[150px]">{fileName}</span>
               </div>
             )}
-
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isProcessing}
-              className="group relative flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-full font-bold hover:scale-105 transition-all active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
-            >
-              {isProcessing ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <Upload className="w-5 h-5" />
-              )}
-              <span>{textPairs.length > 0 ? 'Ganti Buku' : 'Pilih Buku'}</span>
-            </button>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept=".pdf,.txt"
-              className="hidden"
-            />
           </div>
         </div>
 
@@ -1193,7 +1367,6 @@ export default function App() {
                 <button
                   onClick={() => {
                     setIsModelLoading(false);
-                    setIsOfflineMode(false);
                     setModelStatus(null);
                   }}
                   className="text-[10px] text-zinc-500 hover:text-white underline font-bold uppercase tracking-wider"
@@ -1257,7 +1430,7 @@ export default function App() {
                     {!isOfflineMode && <CheckCircle2 className="absolute top-4 right-4 w-5 h-5 text-emerald-500" />}
                   </div>
 
-                  {/* MarianMT (Remote Download) */}
+                  {/* Remote Model (Hugging Face) */}
                   <div
                     onClick={() => { setIsOfflineMode(true); setModelSource('remote'); }}
                     className={`p-6 rounded-3xl border transition-all cursor-pointer text-left relative overflow-hidden group ${isOfflineMode && modelSource === 'remote' ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/5' : 'bg-white/5 border-white/10 hover:border-white/20'}`}
@@ -1266,10 +1439,10 @@ export default function App() {
                       <div className={`p-2 rounded-xl ${isOfflineMode && modelSource === 'remote' ? 'bg-amber-500 text-black' : 'bg-white/10 text-zinc-400'}`}>
                         <WifiOff className="w-5 h-5" />
                       </div>
-                      <span className="font-bold">Offline (Auto)</span>
+                      <span className="font-bold">Remote</span>
                     </div>
                     <p className="text-xs text-zinc-500 leading-relaxed">
-                      Lokal di HP, gratis selamanya. Download ~150MB di awal.
+                      Download model dari Hugging Face. Masukkan ID model (e.g. MarianMT) dan download otomatis.
                     </p>
                     {isOfflineMode && modelSource === 'remote' && <CheckCircle2 className="absolute top-4 right-4 w-5 h-5 text-amber-500" />}
                   </div>
@@ -1291,6 +1464,57 @@ export default function App() {
                     {isOfflineMode && modelSource === 'custom' && <CheckCircle2 className="absolute top-4 right-4 w-5 h-5 text-blue-500" />}
                   </div>
                 </div>
+
+                {isOfflineMode && modelSource === 'remote' && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="mb-12 p-6 bg-amber-500/5 border border-amber-500/20 rounded-3xl max-w-lg w-full"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h4 className="text-sm font-bold text-amber-500 uppercase tracking-widest">Setup Remote Model</h4>
+                        <p className="text-[10px] text-zinc-500 mt-1">Masukkan ID model Hugging Face (contoh: Xenova/opus-mt-en-id).</p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3 items-center">
+                      <div className="flex-1 relative">
+                        <input
+                          type="text"
+                          value={remoteModelId}
+                          onChange={(e) => setRemoteModelId(e.target.value)}
+                          placeholder="Username/model-id"
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-amber-500/50 transition-colors"
+                        />
+                      </div>
+                      <button
+                        onClick={() => loadOfflineModel()}
+                        disabled={isModelLoading}
+                        className="flex items-center gap-2 px-6 py-2 bg-amber-500 text-black rounded-xl font-bold text-sm hover:bg-amber-400 transition-all shadow-lg shadow-amber-500/20 active:scale-95 disabled:opacity-50"
+                      >
+                        {isModelLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                        <span>DOWNLOAD</span>
+                      </button>
+                    </div>
+
+                    <div className="mt-4 flex flex-col gap-2">
+                      <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl border text-xs ${translatorRef.current && modelSource === 'remote' && loadedModelId === remoteModelId ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : 'bg-white/5 border-white/10 text-zinc-500'}`}>
+                        {translatorRef.current && modelSource === 'remote' && loadedModelId === remoteModelId ? (
+                          <>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span className="font-bold">Model siap digunakan!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Info className="w-4 h-4" />
+                            <span>{translatorRef.current && loadedModelId !== remoteModelId ? "Model lain sedang aktif. Klik Download untuk mengganti." : "Pastikan model kompatibel dengan Transformers.js"}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
 
                 {isOfflineMode && modelSource === 'custom' && (
                   <motion.div
@@ -1339,8 +1563,6 @@ export default function App() {
                               const newMap = new Map<string, Blob>();
                               Array.from(files).forEach(f => newMap.set(f.name, f));
                               setCustomModelFiles(newMap);
-                              // Trigger load immediately with the new files to avoid race condition
-                              if (isOfflineMode) loadOfflineModel(newMap);
                             };
                             input.click();
                           }}
@@ -1353,54 +1575,120 @@ export default function App() {
 
                     {customModelFiles.size > 0 ? (
                       <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-2">
-                          {[
-                            { label: 'config.json', pattern: 'config.json' },
-                            { label: 'tokenizer.json', pattern: 'tokenizer.json' },
-                            { label: 'encoder (.onnx)', pattern: 'encoder' },
-                            { label: 'decoder (.onnx)', pattern: 'decoder' },
-                            { label: 'merged (.onnx)', pattern: 'merged' }
-                          ].map(req => {
-                            const found = Array.from(customModelFiles.keys()).some(k => k.toLowerCase().includes(req.pattern.toLowerCase()) || (req.pattern === 'encoder' && !k.toLowerCase().includes('decoder') && k.endsWith('.onnx')));
-                            return (
-                              <div key={req.label} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-mono ${found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : (req.pattern === 'decoder' ? 'bg-amber-500/5 border-amber-500/20 text-amber-500/50' : 'bg-red-500/10 border-red-500/30 text-red-500')}`}>
-                                {found ? <CheckCircle2 className="w-3 h-3" /> : (req.pattern === 'decoder' ? <AlertCircle className="w-3 h-3" /> : <X className="w-3 h-3" />)}
-                                {req.label}
+                        {/* Config Summary Card */}
+                        {modelConfig && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 space-y-3"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <Info className="w-4 h-4 text-blue-400" />
+                              <h5 className="text-xs font-bold text-blue-400 uppercase tracking-widest">Model Information</h5>
+                            </div>
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px]">
+                              <div className="space-y-0.5">
+                                <p className="text-zinc-500 uppercase font-bold tracking-tighter">Architecture</p>
+                                <p className="text-zinc-300 font-mono truncate">{modelConfig.arch}</p>
                               </div>
-                            );
-                          })}
+                              <div className="space-y-0.5">
+                                <p className="text-zinc-500 uppercase font-bold tracking-tighter">Type</p>
+                                <p className="text-zinc-300 font-mono capitalize">{modelConfig.modelType}</p>
+                              </div>
+                              <div className="space-y-0.5">
+                                <p className="text-zinc-500 uppercase font-bold tracking-tighter">Tokenizer</p>
+                                <p className="text-zinc-300 font-mono">{modelConfig.tokenizer}</p>
+                              </div>
+                              <div className="space-y-0.5">
+                                <p className="text-zinc-500 uppercase font-bold tracking-tighter">Structure</p>
+                                <p className="text-zinc-300 font-mono">{modelConfig.isEncoderDecoder ? 'Encoder-Decoder' : 'Single Model'}</p>
+                              </div>
+                              <div className="space-y-0.5">
+                                <p className="text-zinc-500 uppercase font-bold tracking-tighter">Features</p>
+                                <p className="text-zinc-300 font-mono text-[8px]">
+                                  {modelConfig.hasGenerationConfig && 'GenCfg '}
+                                  {modelConfig.hasQuantizeConfig && 'QuantCfg '}
+                                  {!modelConfig.hasGenerationConfig && !modelConfig.hasQuantizeConfig && 'None'}
+                                </p>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => loadOfflineModel()}
+                            disabled={isModelLoading || !modelConfig}
+                            className="flex-1 flex items-center justify-center gap-2 px-6 py-2.5 bg-blue-500 text-black rounded-xl font-bold text-sm hover:bg-blue-400 transition-all shadow-lg shadow-blue-500/20 active:scale-95 disabled:opacity-30"
+                          >
+                            {isModelLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Activity className="w-5 h-5" />}
+                            <span>MUAT {modelConfig ? 'MODEL' : 'KONFIGURASI'}</span>
+                          </button>
                         </div>
 
-                        <div className="pt-3 border-t border-white/5">
-                          <p className="text-[10px] text-zinc-500 mb-2 uppercase tracking-tighter font-bold">Files Uploaded ({customModelFiles.size}):</p>
-                          <div className="max-h-24 overflow-y-auto custom-scrollbar flex flex-wrap gap-1">
+                        {/* File Checklist */}
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center px-1">
+                            <p className="text-[10px] text-zinc-500 uppercase tracking-tighter font-bold">Checklist File:</p>
+                            <span className="text-[9px] text-zinc-600 font-mono italic">dinamis via config.json</span>
+                          </div>
+                          <div className="max-h-32 overflow-y-auto custom-scrollbar grid grid-cols-2 gap-2 pr-1">
+                            {[
+                              { label: 'config.json', pattern: 'config.json', essential: true },
+                              { label: 'tokenizer.json', pattern: 'tokenizer', essential: true },
+                              { label: 'generation_config.json', pattern: 'generation_config.json', essential: false },
+                              { label: 'quantize_config.json', pattern: 'quantize_config.json', essential: false },
+                              ...(modelConfig?.requiredWeights.map(w => ({ label: w, pattern: w, essential: true })) || [
+                                { label: 'weights (.onnx)', pattern: '.onnx', essential: true }
+                              ])
+                            ].map(req => {
+                              const filenames = Array.from(customModelFiles.keys());
+                              let found = filenames.some(k => k.toLowerCase() === req.pattern.toLowerCase());
+
+                              // Fuzzy match for weights if not exact
+                              if (!found && req.pattern.endsWith('.onnx')) {
+                                if (req.pattern.includes('encoder')) {
+                                  found = filenames.some(k => k.toLowerCase().includes('encoder') && k.endsWith('.onnx'));
+                                } else if (req.pattern.includes('decoder')) {
+                                  found = filenames.some(k => k.toLowerCase().includes('decoder') && k.endsWith('.onnx')) ||
+                                    filenames.some(k => k.toLowerCase().includes('merged') && k.endsWith('.onnx'));
+                                } else if (req.pattern === 'model.onnx') {
+                                  found = filenames.some(k => k.endsWith('.onnx'));
+                                }
+                              }
+                              // Flexible match for tokenizer/config
+                              if (!found && !req.pattern.endsWith('.onnx')) {
+                                found = filenames.some(k => k.toLowerCase().includes(req.pattern.toLowerCase()));
+                              }
+
+                              return (
+                                <div key={req.label} className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[9px] font-mono transition-all ${found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500' : (req.essential ? 'bg-red-500/5 border-red-500/20 text-red-500/40' : 'bg-white/5 border-white/5 text-zinc-600')}`}>
+                                  {found ? <CheckCircle2 className="w-3 h-3" /> : (req.essential ? <AlertCircle className="w-3 h-3" /> : <div className="w-3 h-3 border border-current rounded-full opacity-10" />)}
+                                  <span className="truncate">{req.label}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="pt-2 border-t border-white/5 flex flex-col gap-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-[10px] text-zinc-500 uppercase tracking-tighter font-bold">Files Uploaded ({customModelFiles.size})</p>
+                            {Array.from(customModelFiles.keys()).some(k => k.endsWith('.onnx')) && (
+                              <span className="text-[9px] text-emerald-500 font-bold flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3" /> ONNX READY
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="max-h-20 overflow-y-auto custom-scrollbar flex flex-wrap gap-1 pr-1">
                             {Array.from(customModelFiles.keys()).map(name => (
-                              <span key={name} className="px-2 py-0.5 bg-white/5 rounded text-[9px] text-zinc-400 border border-white/5">
+                              <span key={name} className="px-2 py-0.5 bg-white/5 rounded text-[8px] text-zinc-500 border border-white/5 font-mono">
                                 {name}
                               </span>
                             ))}
                           </div>
                         </div>
-
-                        {Array.from(customModelFiles.keys()).some(k => k.endsWith('.onnx')) ? (
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2 text-xs text-emerald-500 bg-emerald-500/20 p-3 rounded-2xl border border-emerald-500/30">
-                              <Activity className="w-4 h-4" />
-                              <span className="font-bold">Model terdeteksi. Siap untuk dimuat!</span>
-                            </div>
-                            {!Array.from(customModelFiles.keys()).some(k => k.toLowerCase().includes('decoder')) && (
-                              <div className="flex items-center gap-2 text-[10px] text-amber-500 bg-amber-500/10 p-2 rounded-xl border border-amber-500/30">
-                                <AlertCircle className="w-3 h-3" />
-                                <span>Tip: Model terjemahan biasanya memerlukan file <b>decoder</b> (.onnx) tambahan.</span>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-xs text-amber-500 bg-amber-500/10 p-3 rounded-2xl border border-amber-500/30">
-                            <AlertCircle className="w-4 h-4" />
-                            <span>File utama (.onnx) belum ditemukan.</span>
-                          </div>
-                        )}
                       </div>
                     ) : (
                       <div className="border-2 border-dashed border-white/10 rounded-2xl py-8 flex flex-col items-center justify-center text-zinc-500 gap-2">
@@ -1463,6 +1751,7 @@ export default function App() {
                           hoveredIndex={hoveredIndex}
                           showOriginalOnly={showOriginalOnly}
                           pdfPage={pdfPage}
+                          readerFontSize={readerFontSize}
                           setHoveredIndex={setHoveredIndex}
                           setPdfPage={setPdfPage}
                           setActiveTab={setActiveTab}
@@ -1589,7 +1878,7 @@ export default function App() {
               )}
             </div>
 
-            {modelSource === 'custom' && textPairs.some(p => p.status === 'pending') && (
+            {isOfflineMode && textPairs.some(p => p.status === 'pending') && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1771,104 +2060,6 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
-                <div>
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-sm text-zinc-400 font-bold uppercase tracking-widest">Model Configuration</span>
-                    <span className="px-2 py-0.5 bg-amber-500/10 text-amber-500 text-[10px] font-bold rounded uppercase">
-                      Quantized 8-bit
-                    </span>
-                  </div>
-                  <div className="bg-[#222] rounded-2xl p-6 border border-white/5 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">Model Source</span>
-                      <select
-                        value={modelSource}
-                        onChange={(e) => {
-                          const newSource = e.target.value as 'remote' | 'local';
-                          setModelSource(newSource);
-                          translatorRef.current = null; // Clear to force reload
-                          if (isOfflineMode) loadOfflineModel();
-                        }}
-                        className="bg-[#333] border border-white/10 rounded-lg px-3 py-1.5 text-xs font-bold outline-none focus:ring-1 ring-amber-500 transition-all cursor-pointer"
-                      >
-                        <option value="remote">Remote (HuggingFace CDN)</option>
-                        <option value="local">Local (Bundled in APK)</option>
-                        <option value="custom">Custom (Upload Model)</option>
-                      </select>
-                    </div>
-                    <div className="flex items-center justify-between pt-2 border-t border-white/5">
-                      <span className="text-zinc-500 text-xs">Model ID</span>
-                      <span className="text-xs font-mono text-zinc-400">
-                        {modelSource === 'local' ? 'opus-mt-en-id' : modelSource === 'custom' ? 'User-Uploaded Model' : 'Xenova/opus-mt-en-id'}
-                      </span>
-                    </div>
-
-                    {modelSource === 'custom' && (
-                      <div className="pt-2 flex flex-col gap-2">
-                        <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
-                          <span>Files: {customModelFiles.size} detected</span>
-                          <button
-                            onClick={() => {
-                              const input = document.createElement('input');
-                              input.type = 'file';
-                              input.multiple = true;
-                              input.onchange = (e: any) => {
-                                const files = e.target.files as FileList;
-                                const newMap = new Map<string, Blob>();
-                                Array.from(files).forEach(f => {
-                                  newMap.set(f.name, f);
-                                });
-                                setCustomModelFiles(newMap);
-                                if (isOfflineMode) loadOfflineModel();
-                              };
-                              input.click();
-                            }}
-                            className="text-amber-500 hover:text-amber-400 font-bold"
-                          >
-                            CHANGE FILES
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (confirm("Hapus model custom dari penyimpanan browser?")) {
-                                setCustomModelFiles(new Map());
-                                const request = indexedDB.open('ModelStorage', 1);
-                                request.onsuccess = (e: any) => {
-                                  const db = e.target.result;
-                                  const transaction = db.transaction(['models'], 'readwrite');
-                                  const store = transaction.objectStore('models');
-                                  store.delete('current_custom_model');
-                                };
-                                setModelSource('remote');
-                                translatorRef.current = null;
-                              }
-                            }}
-                            className="text-zinc-600 hover:text-red-500 font-bold ml-3"
-                          >
-                            CLEAR
-                          </button>
-                        </div>
-                        {customModelFiles.size > 0 && Array.from(customModelFiles.keys()).some(k => k.endsWith('.onnx')) ? (
-                          <div className="text-[9px] text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded inline-flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3" />
-                            Model file detected (.onnx)
-                          </div>
-                        ) : customModelFiles.size > 0 ? (
-                          <div className="text-[9px] text-red-500 bg-red-500/10 px-2 py-1 rounded inline-flex items-center gap-1">
-                            <AlertCircle className="w-3 h-3" />
-                            Missing .onnx file!
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-start gap-2 pt-2 text-[10px] text-zinc-500">
-                      <Info className="w-3 h-3" />
-                      <span>{modelSource === 'local' ? 'Local mode memerlukan model di folder `/public/models/`.' :
-                        modelSource === 'custom' ? 'Upload semua file model (onnx, json) sekaligus.' :
-                          'Mengunduh dari CDN HuggingFace.'}</span>
-                    </div>
-                  </div>
-                </div>
 
                 {performanceMetrics.history.length > 0 && (
                   <div>
@@ -1888,6 +2079,171 @@ export default function App() {
                     </div>
                   </div>
                 )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSettings(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative w-full max-w-lg bg-[#1a1a1a] border border-white/10 rounded-3xl p-8 shadow-2xl overflow-hidden"
+            >
+              <div className="absolute top-0 right-0 p-4">
+                <button
+                  onClick={() => setShowSettings(false)}
+                  className="p-2 hover:bg-white/5 rounded-xl transition-colors text-zinc-400 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-4 mb-8">
+                <div className="p-3 bg-blue-500/10 rounded-2xl">
+                  <Settings className="w-6 h-6 text-blue-500" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold">Settings</h3>
+                  <p className="text-sm text-zinc-500">Konfigurasi aplikasi & preferensi</p>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="flex items-center gap-2 text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3">
+                    <Key className="w-3 h-3" /> Gemini API Key
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="password"
+                      value={geminiApiKey}
+                      onChange={(e) => setGeminiApiKey(e.target.value)}
+                      placeholder="Masukkan Gemini API Key..."
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono"
+                    />
+                  </div>
+                  <p className="text-[10px] text-zinc-500 mt-2 italic">
+                    API Key disimpan secara lokal di browser Anda.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-2 text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3">
+                    Reader Font Size ({readerFontSize}px)
+                  </label>
+                  <div className="flex items-center gap-4">
+                    <input
+                      type="range"
+                      min="12"
+                      max="32"
+                      value={readerFontSize}
+                      onChange={(e) => setReaderFontSize(parseInt(e.target.value))}
+                      className="flex-1 accent-blue-500"
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setReaderFontSize(p => Math.max(12, p - 2))}
+                        className="p-2 bg-white/5 rounded-lg hover:bg-white/10"
+                      >
+                        <ZoomOut className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setReaderFontSize(p => Math.min(32, p + 2))}
+                        className="p-2 bg-white/5 rounded-lg hover:bg-white/10"
+                      >
+                        <ZoomIn className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="flex items-center gap-2 text-xs font-bold text-zinc-400 uppercase tracking-widest">
+                      <History className="w-3 h-3" /> Riwayat Terjemahan
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={exportHistory}
+                        className="p-1.5 bg-white/5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-emerald-400 transition-all"
+                        title="Export History"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={importHistory}
+                        className="p-1.5 bg-white/5 rounded-lg hover:bg-white/10 text-zinc-400 hover:text-blue-400 transition-all"
+                        title="Import History"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-48 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                    {translationHistory.length === 0 ? (
+                      <div className="text-[10px] text-zinc-600 italic py-4 text-center border border-dashed border-white/5 rounded-xl">
+                        Belum ada riwayat.
+                      </div>
+                    ) : (
+                      translationHistory.map((h, i) => (
+                        <div key={i} className="bg-white/5 border border-white/5 rounded-xl p-3 group relative hover:border-blue-500/30 transition-all">
+                          <div className="flex justify-between items-start mb-1">
+                            <p className="text-[11px] font-bold text-zinc-300 truncate pr-8">{h.fileName}</p>
+                            <button
+                              onClick={() => {
+                                setTranslationHistory(prev => prev.filter(x => x.fileName !== h.fileName));
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-red-500/50 hover:text-red-500 transition-all"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between text-[9px] text-zinc-500 font-mono">
+                            <span>{h.date}</span>
+                            <span className={h.progress === 100 ? 'text-emerald-500' : 'text-blue-400'}>{h.progress}% Selesai</span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <p className="text-[9px] text-zinc-600 mt-2 italic flex items-center gap-1">
+                    <Info className="w-3 h-3" /> Riwayat menyimpan data terjemahan agar hemat kuota.
+                  </p>
+                </div>
+
+                <div className="pt-4 border-t border-white/5">
+                  <button
+                    onClick={() => {
+                      if (confirm("Hapus semua data terjemahan dan reset status?")) {
+                        setTextPairs([]);
+                        setFileName(null);
+                        setFileUrl(null);
+                        setProgress(0);
+                        localStorage.removeItem('gemini_daily_usage');
+                        setTokenUsageDaily(0);
+                        setShowSettings(false);
+                      }
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-red-500/10 text-red-500 rounded-xl font-bold text-xs hover:bg-red-500/20 transition-all border border-red-500/20"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    RESET DATA APLIKASI
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
