@@ -1,4 +1,4 @@
-// Service Worker for Bilingual Reader - Custom Model Serving
+
 const CACHE_NAME = 'custom-model-cache-v1';
 
 self.addEventListener('install', (event) => {

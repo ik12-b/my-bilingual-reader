@@ -127,6 +127,7 @@ interface TextPair {
   translated: string;
   status: 'pending' | 'translating' | 'completed' | 'error';
   page?: number;
+  eta?: number; // Estimated seconds remaining
 }
 
 interface HistoryEntry {
@@ -192,21 +193,47 @@ const TranslationPair = React.memo(({
         </p>
 
         {!showOriginalOnly && (
-          <div className="min-h-[1.2rem]">
+          <div className="min-h-[1.2rem] mt-2">
             {pair.status === 'translating' ? (
-              <div className="flex items-center gap-2 text-zinc-600 italic text-xs">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                <span>Menerjemahkan...</span>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-[10px] font-bold">
+                  <div className="flex items-center gap-2 text-blue-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span className="uppercase tracking-widest">Menganalisis...</span>
+                  </div>
+                  {pair.eta !== undefined && pair.eta > 0 && (
+                    <div className="flex items-center gap-1 text-zinc-500 font-mono">
+                      <Clock className="w-3 h-3" />
+                      <span>~{pair.eta}s</span>
+                    </div>
+                  )}
+                </div>
+                <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: "0%" }}
+                    animate={{ width: "100%" }}
+                    transition={{
+                      duration: pair.eta || 2,
+                      ease: "linear"
+                    }}
+                    className="h-full bg-blue-500"
+                  />
+                </div>
               </div>
             ) : pair.status === 'completed' ? (
-              <p
+              <motion.p
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
                 className="font-medium text-zinc-500 leading-relaxed italic"
                 style={{ fontSize: `${Math.max(12, readerFontSize - 2)}px` }}
               >
                 {pair.translated}
-              </p>
+              </motion.p>
             ) : pair.status === 'error' ? (
-              <p className="text-xs text-red-500/60 italic">Gagal menerjemahkan.</p>
+              <div className="flex items-center gap-2 text-red-500/60 italic text-[10px]">
+                <AlertCircle className="w-3 h-3" />
+                <span>Gagal menerjemahkan. Cek kuota atau file model.</span>
+              </div>
             ) : null}
           </div>
         )}
@@ -498,8 +525,8 @@ export default function App() {
         // SW just registered but not controlling yet — need page refresh
         setIsModelLoading(false);
         setModelStatus(null);
-        setErrorMessage("Service Worker baru aktif! Silakan refresh halaman (Ctrl+R) dan coba lagi.");
-
+        setErrorMessage("Service Worker belum siap mengontrol halaman. Silakan refresh halaman (Ctrl+R) dan coba lagi.");
+        return false;
       }
 
       console.log('[SW] Service Worker is active:', swRegistration.active?.state);
@@ -860,7 +887,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `bilingual-reader-history-${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `reader-history-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1024,20 +1051,20 @@ export default function App() {
     const batchSize = 12; // Increased batch size for fewer API calls
     const total = pairs.length;
 
-    const apiKey = geminiApiKey;
-    if (!apiKey) {
-      setErrorMessage("API Key tidak ditemukan.");
-      return;
-    }
-    const ai = new GoogleGenAI({ apiKey });
+    setIsProcessing(true);
+    setErrorMessage(null);
 
     for (let i = 0; i < total; i += batchSize) {
       const currentBatch = pairs.slice(i, i + batchSize);
 
+      const batchEta = isOfflineMode
+        ? Math.ceil(((performanceMetrics.avgLatency || 500) * currentBatch.length) / 1000)
+        : 3; // Gemini estimate
+
       setTextPairs(prev => {
         const next = [...prev];
         for (let j = i; j < Math.min(i + batchSize, total); j++) {
-          next[j] = { ...next[j], status: 'translating' };
+          next[j] = { ...next[j], status: 'translating', eta: batchEta };
         }
         return next;
       });
@@ -1057,6 +1084,7 @@ export default function App() {
                 }
                 return next;
               });
+              setIsProcessing(false);
               return; // Stop processing batches if model failed
             }
           }
@@ -1076,7 +1104,13 @@ export default function App() {
             const end = performance.now();
             const latency = end - start;
 
-            translations = results.map((r: any) => r.translation_text);
+            translations = results && Array.isArray(results)
+              ? results.map((r: any) => r.translation_text)
+              : [];
+
+            if (translations.length === 0) {
+              console.warn("[Transformers.js] Hasil terjemahan kosong atau tidak valid.");
+            }
 
             // Update performance metrics
             setPerformanceMetrics(prev => {
@@ -1100,6 +1134,14 @@ export default function App() {
             throw new Error("Translator model not ready");
           }
         } else {
+          const apiKey = geminiApiKey;
+          if (!apiKey) {
+            setErrorMessage("API Key tidak ditemukan untuk mode Online.");
+            setIsProcessing(false);
+            return;
+          }
+          const ai = new GoogleGenAI({ apiKey });
+
           const prompt = `Translate these sentences to Indonesian. Keep it natural. 
           Return ONLY a JSON array of strings.
           Sentences: ${JSON.stringify(currentBatch.map(p => p.original))}`;
@@ -1171,6 +1213,7 @@ export default function App() {
 
       setProgress(50 + Math.round((Math.min(i + batchSize, total) / total) * 50));
     }
+    setIsProcessing(false);
   };
 
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -1228,7 +1271,8 @@ export default function App() {
                     <ArrowLeft className="w-4 h-4" />
                   </button>
                 )}
-                <h1 className="text-xl font-bold tracking-tight">Bilingual Reader</h1>
+                <h1 className="text-xl font-bold tracking-tight"> Book Reader</h1>
+
               </div>
               <p className="text-xs text-zinc-400 font-medium uppercase tracking-wider">AI Powered Translation</p>
             </div>
@@ -1243,10 +1287,10 @@ export default function App() {
                     ? 'bg-emerald-500 text-black'
                     : 'bg-white/10 text-white hover:bg-white/20'
                     }`}
-                  title={showOriginalOnly ? "Lihat Bilingual" : "Lihat Teks Asli"}
+                  title={showOriginalOnly ? "Lihat text" : "Lihat Teks Asli"}
                 >
                   {showOriginalOnly ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                  <span className="hidden sm:inline">{showOriginalOnly ? 'Bilingual Off' : 'Teks Asli'}</span>
+                  <span className="hidden sm:inline">{showOriginalOnly ? 'apk Off' : 'Teks Asli'}</span>
                 </button>
 
                 {fileUrl && fileName?.toLowerCase().endsWith('.pdf') && (
@@ -1330,7 +1374,7 @@ export default function App() {
 
       <main className="relative w-full overflow-hidden">
         {modelStatus && (
-          <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] w-full max-w-md">
+          <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[200] w-full max-w-md">
             <motion.div
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1379,7 +1423,7 @@ export default function App() {
         )}
 
         {errorMessage && (
-          <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[60] w-full max-w-md">
+          <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[201] w-full max-w-md">
             <motion.div
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1407,7 +1451,7 @@ export default function App() {
                 <div className="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mb-8 border border-white/10">
                   <Languages className="w-12 h-12 text-zinc-500" />
                 </div>
-                <h2 className="text-3xl font-bold mb-4">Mulai Membaca Bilingual</h2>
+                <h2 className="text-3xl font-bold mb-4">Mulai Membaca Text</h2>
                 <p className="text-zinc-400 max-w-md text-lg leading-relaxed mb-12">
                   Pilih model penerjemah dan unggah file PDF/TXT Anda untuk mulai membaca dengan terjemahan AI.
                 </p>
@@ -1884,9 +1928,17 @@ export default function App() {
                   e.stopPropagation();
                   translateInBatches(textPairs);
                 }}
-                className="ml-2 px-4 py-1.5 bg-blue-500 text-black text-xs font-bold rounded-full hover:bg-blue-400 transition-colors shadow-lg shadow-blue-500/20"
+                disabled={isProcessing}
+                className="ml-2 px-4 py-1.5 bg-blue-500 text-black text-xs font-bold rounded-full hover:bg-blue-400 transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
-                MULAI TERJEMAHKAN
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>MEMPROSES...</span>
+                  </>
+                ) : (
+                  <span>MULAI TERJEMAHKAN</span>
+                )}
               </button>
             )}
 
@@ -2249,6 +2301,14 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileChange}
+        accept=".pdf,.txt"
+        className="hidden"
+      />
     </div>
   );
 }

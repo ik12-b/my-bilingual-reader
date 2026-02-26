@@ -1,5 +1,5 @@
 {
-  "name": "Bilingual Book Reader",
+  "name": "Book Reader",
   "description": "A dark-themed book reader that extracts text from PDF/TXT files and provides sentence-by-sentence AI translation.",
   "requestFramePermissions": []
 }
